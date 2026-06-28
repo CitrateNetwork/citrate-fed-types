@@ -1,0 +1,12 @@
+[package]
+name = "citrate-fed-types"
+version = "0.1.0"
+edition = "2021"
+rust-version = "1.96.0"
+license = "BUSL-1.1"
+authors = ["Citrate Network / Citrate Inc."]
+description = "The audited deterministic boundary between the federated meta-learning research crates (nat) and the production chain (citrate-chain): Q16 fixed-point, the bucketed trimmed-mean aggregation + digest, the LoRA + patronage commitment math, and the ChainCommit/Settlement seam traits. No research ML — only the contracts both sides must agree on, bit-for-bit."
+
+[dependencies]
+serde = { version = "1", features = ["derive"] }
+sha2 = "0.10"
