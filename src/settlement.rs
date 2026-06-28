@@ -126,4 +126,19 @@ mod tests {
             );
         }
     }
+
+    /// L3: lock the three-step integer-division *order* under NON-unit weights, where two of
+    /// the divisions actually floor (the default-weight anchor above leaves them exact). The
+    /// expected value is hand-derived from `PatronageLedger.recordContribution`
+    /// (`citrate-coop/contracts/src/PatronageLedger.sol:96-98`) in the contract's exact order:
+    ///   compute_units      = floor(1234)                 = 1234
+    ///   data_quality_bps   = round(0.9 * 10_000)         = 9000
+    ///   weighted_compute   = 1234 * 6500 / 10_000        = 802   (floor of 802.1)
+    ///   weighted_quality   = 9000 * 4200 / 10_000        = 3780
+    ///   units              = 802 * 3780 / 10_000         = 303   (floor of 303.156)
+    /// If the operation order or flooring ever drifts from the contract, this fails.
+    #[test]
+    fn patronage_units_match_onchain_under_non_unit_weights() {
+        assert_eq!(row(1234.0, 0.9).patronage_units(6500, 4200), 303);
+    }
 }

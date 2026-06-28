@@ -28,12 +28,84 @@ pub struct LoraFactors {
     pub matrix_b: Vec<Vec<f32>>,
 }
 
+/// Why a [`LoraFactors`] could not be committed: its matrices do not match the declared
+/// `rank` / `dim_out` / `dim_in` (finding H1). The chain recomputes this commitment to
+/// verify an untrusted registration, so a shape-malformed payload must be *rejected*, not
+/// allowed to panic the verifier.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum LoraError {
+    ShapeMismatch {
+        field: &'static str,
+        expected: usize,
+        found: usize,
+    },
+}
+
+impl std::fmt::Display for LoraError {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        match self {
+            LoraError::ShapeMismatch {
+                field,
+                expected,
+                found,
+            } => write!(
+                f,
+                "lora: {field} shape mismatch (expected {expected}, found {found})"
+            ),
+        }
+    }
+}
+impl std::error::Error for LoraError {}
+
 fn q(v: f32) -> [u8; 8] {
     Q16::from_f32(v).raw().to_le_bytes()
 }
 
+/// Validate that the matrices match the declared dims, fail-closed (finding H1). `matrix_a`
+/// is `[rank][dim_in]`, `matrix_b` is `[dim_out][rank]`.
+fn validate_shape(a: &LoraFactors) -> Result<(), LoraError> {
+    if a.matrix_a.len() != a.rank {
+        return Err(LoraError::ShapeMismatch {
+            field: "matrix_a.rows(rank)",
+            expected: a.rank,
+            found: a.matrix_a.len(),
+        });
+    }
+    for row in &a.matrix_a {
+        if row.len() != a.dim_in {
+            return Err(LoraError::ShapeMismatch {
+                field: "matrix_a.cols(dim_in)",
+                expected: a.dim_in,
+                found: row.len(),
+            });
+        }
+    }
+    if a.matrix_b.len() != a.dim_out {
+        return Err(LoraError::ShapeMismatch {
+            field: "matrix_b.rows(dim_out)",
+            expected: a.dim_out,
+            found: a.matrix_b.len(),
+        });
+    }
+    for row in &a.matrix_b {
+        if row.len() != a.rank {
+            return Err(LoraError::ShapeMismatch {
+                field: "matrix_b.cols(rank)",
+                expected: a.rank,
+                found: row.len(),
+            });
+        }
+    }
+    Ok(())
+}
+
 /// The Q16-exact, rank-atom-order-independent, tamper-detecting LoRA commitment.
-pub fn lora_commitment(a: &LoraFactors) -> String {
+///
+/// Fail-closed: returns [`LoraError::ShapeMismatch`] if the matrices do not match the
+/// declared dims (finding H1), so an untrusted registration cannot panic the verifier. The
+/// committed bytes are unchanged from the pre-remediation digest — the frozen golden holds.
+pub fn lora_commitment(a: &LoraFactors) -> Result<String, LoraError> {
+    validate_shape(a)?;
     let mut atoms: Vec<Vec<u8>> = (0..a.rank)
         .map(|k| {
             let mut blob = Vec::with_capacity((a.dim_out + a.dim_in) * 8);
@@ -59,7 +131,7 @@ pub fn lora_commitment(a: &LoraFactors) -> String {
         h.update((blob.len() as u32).to_le_bytes());
         h.update(blob);
     }
-    hex(&h.finalize())
+    Ok(hex(&h.finalize()))
 }
 
 #[cfg(test)]
@@ -103,13 +175,42 @@ mod tests {
         assert_eq!(lora_commitment(&a), lora_commitment(&swapped));
     }
 
+    /// H1: a shape-malformed `LoraFactors` is rejected fail-closed, not panicked.
+    #[test]
+    fn lora_commitment_rejects_malformed_shape() {
+        // declares rank=2/dim_out=4/dim_in=3 but supplies 1-row matrices.
+        let bad = LoraFactors {
+            zone_tag: 0,
+            rank: 2,
+            dim_out: 4,
+            dim_in: 3,
+            alpha: 1.0,
+            matrix_a: vec![vec![0.1, 0.2, 0.3]],
+            matrix_b: vec![vec![1.0, 0.0]],
+        };
+        assert!(matches!(
+            lora_commitment(&bad),
+            Err(LoraError::ShapeMismatch { .. })
+        ));
+        // a too-short row inside an otherwise-correct outer length is also caught.
+        let mut bad_row = sample();
+        bad_row.matrix_a[0].pop();
+        assert!(matches!(
+            lora_commitment(&bad_row),
+            Err(LoraError::ShapeMismatch {
+                field: "matrix_a.cols(dim_in)",
+                ..
+            })
+        ));
+    }
+
     // Frozen golden over an explicit fixture (the kernel's own ratchet). The cross-crate
     // parity with nat-lora's `bd08b278…` is preserved by the identical domain +
     // serialization, and is re-asserted when nat-lora adopts this kernel (migration guard).
     #[test]
     fn lora_commitment_is_frozen() {
         assert_eq!(
-            lora_commitment(&sample()),
+            lora_commitment(&sample()).unwrap(),
             "9bda1b5bccb365446d998a71f48c6852a85d1a94657022cd02bc9a3742a6716d"
         );
     }

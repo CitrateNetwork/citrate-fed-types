@@ -42,13 +42,24 @@ pub enum AggregateError {
         expected: usize,
         found: usize,
     },
-    /// `2 * trim >= bucket_count`, so the kept band would be empty.
+    /// `2 * trim >= bucket_count`, so the kept band would be empty. Also returned when
+    /// `2 * trim` would overflow `usize` (an adversarial `trim` cannot wrap past this guard).
     TrimBudgetTooLarge {
         trim: usize,
         bucket_count: usize,
     },
     NoBuckets,
+    /// `bucket_count` exceeds [`MAX_BUCKETS`] — rejected before allocation so a pathological
+    /// value cannot OOM the aggregator (finding H2).
+    TooManyBuckets {
+        bucket_count: usize,
+        max: usize,
+    },
 }
+
+/// Upper bound on `bucket_count`, far above any real federated round (≈1M buckets), that
+/// bounds the bucket-vector allocation so a malicious `bucket_count` cannot exhaust memory.
+pub const MAX_BUCKETS: usize = 1 << 20;
 
 impl std::fmt::Display for AggregateError {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
@@ -67,6 +78,12 @@ impl std::fmt::Display for AggregateError {
                 )
             }
             AggregateError::NoBuckets => write!(f, "aggregate: bucket_count must be >= 1"),
+            AggregateError::TooManyBuckets { bucket_count, max } => {
+                write!(
+                    f,
+                    "aggregate: bucket_count {bucket_count} exceeds max {max}"
+                )
+            }
         }
     }
 }
@@ -84,6 +101,10 @@ pub struct AggregateResult {
 /// Deterministically assign a worker to one of `bucket_count` buckets by hashing
 /// `seed || node_id`. Production replaces the seed with a VRF output; the assignment
 /// function is identical and reproducible given the seed.
+///
+/// `bucket_count` is clamped to `>= 1` so a direct call with `0` cannot divide-by-zero
+/// (finding M1); the sole production caller [`aggregate`] already rejects `0` up front, so
+/// this clamp is defense-in-depth on the public helper and never changes a real result.
 pub fn bucket_of(seed: &[u8], node_id: &str, bucket_count: usize) -> usize {
     let mut h = Sha256::new();
     h.update(seed);
@@ -91,7 +112,7 @@ pub fn bucket_of(seed: &[u8], node_id: &str, bucket_count: usize) -> usize {
     h.update(node_id.as_bytes());
     let d = h.finalize();
     let v = u64::from_le_bytes(d[0..8].try_into().expect("sha256 is 32 bytes"));
-    (v % bucket_count as u64) as usize
+    (v % bucket_count.max(1) as u64) as usize
 }
 
 /// Coordinate-wise trimmed mean of one coordinate across submissions, in Q16. Sort by the
@@ -127,6 +148,12 @@ pub fn aggregate(
     if bucket_count == 0 {
         return Err(AggregateError::NoBuckets);
     }
+    if bucket_count > MAX_BUCKETS {
+        return Err(AggregateError::TooManyBuckets {
+            bucket_count,
+            max: MAX_BUCKETS,
+        });
+    }
     let first = grads.first().ok_or(AggregateError::Empty)?;
     let dim = first.dim();
     for g in grads {
@@ -148,7 +175,13 @@ pub fn aggregate(
         .map(|b| bucket_mean(b, dim))
         .collect();
 
-    if 2 * trim >= bucket_means.len() {
+    // Overflow-safe trim guard: an adversarial `trim` near `usize::MAX` must not let
+    // `2 * trim` wrap past this check and then underflow the `[trim..len-trim]` slice
+    // (finding H2). `checked_mul` → `None` ⇒ trim is far too large ⇒ reject.
+    let band_too_small = trim
+        .checked_mul(2)
+        .is_none_or(|two_trim| two_trim >= bucket_means.len());
+    if band_too_small {
         return Err(AggregateError::TrimBudgetTooLarge {
             trim,
             bucket_count: bucket_means.len(),
@@ -242,6 +275,47 @@ mod tests {
                 bucket_count: 2
             }
         );
+    }
+
+    // --- Tier-1 remediation ratchets (each fails / panics on the pre-fix code) ---
+
+    /// H2: an adversarial `trim` whose `2*trim` overflows `usize` must be rejected, not wrap
+    /// past the guard into a slice underflow.
+    #[test]
+    fn aggregate_rejects_overflowing_trim() {
+        let g = vec![
+            pg("a", &[1.0]),
+            pg("b", &[1.0]),
+            pg("c", &[1.0]),
+            pg("d", &[1.0]),
+        ];
+        let trim = usize::MAX / 2 + 1; // 2*trim overflows usize
+                                       // Must reject (not wrap past the guard into a slice underflow). `bucket_count` in the
+                                       // error is the non-empty-bucket-means count, so match on the variant + trim only.
+        assert!(matches!(
+            aggregate(&g, trim, 64, b"s").unwrap_err(),
+            AggregateError::TrimBudgetTooLarge { trim: t, .. } if t == trim
+        ));
+    }
+
+    /// H2: a pathological `bucket_count` is rejected before the bucket-vector allocation,
+    /// so it cannot OOM the aggregator.
+    #[test]
+    fn aggregate_rejects_pathological_bucket_count() {
+        let g = vec![pg("a", &[1.0])];
+        assert_eq!(
+            aggregate(&g, 0, usize::MAX, b"s").unwrap_err(),
+            AggregateError::TooManyBuckets {
+                bucket_count: usize::MAX,
+                max: MAX_BUCKETS
+            }
+        );
+    }
+
+    /// M1: the public `bucket_of` helper does not divide-by-zero on `bucket_count == 0`.
+    #[test]
+    fn bucket_of_does_not_panic_on_zero() {
+        assert_eq!(bucket_of(b"seed", "node", 0), 0);
     }
 
     // PARITY ANCHOR — must reproduce the `nat-aggregate` frozen golden bit-for-bit. If
