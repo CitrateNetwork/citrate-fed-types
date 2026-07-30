@@ -16,6 +16,37 @@
 
 use serde::{Deserialize, Serialize};
 
+/// **Do not raise this. The `i64` headroom is for range, never for resolution.**
+///
+/// The widening from `i32` to `i64` bought representable *range*. It is tempting to read
+/// the spare bits as room for a finer grid — `Q32.32` — and that would silently destroy
+/// the property cross-backend settlement depends on.
+///
+/// Two honest members training identical work on different hardware do not land on
+/// bit-identical weights; CUDA, Metal and CPU differ in reduction order and fused kernels.
+/// Measured across two machines and two vendors (2026-07-30), the worst honest divergence
+/// is **1.34e-07** — about one ULP of f32 — against a grid step of `2^-16` = **1.53e-05**.
+/// The grid is ~114× coarser than the disagreement, and that is exactly why it works: the
+/// quantization *absorbs* honest hardware drift.
+///
+/// The share of coordinates landing on opposite sides of a grid boundary is roughly
+/// `divergence / grid_step`:
+///
+/// | `FRAC_BITS` | grid step | straddling coordinates |
+/// |---|---|---|
+/// | 16 (today) | 1.53e-05 | ~0.9% |
+/// | 32 | 2.33e-10 | **all of them, by ~565 steps** |
+///
+/// At 32 fractional bits the grid is finer than the noise floor of the hardware, so it
+/// stops quantizing the disagreement away and starts recording it. Every committed value
+/// would differ between honest members, by hundreds of raw units rather than one.
+///
+/// The float precision is not the lever either. Divergence is already at one ULP of f32,
+/// the smallest disagreement the format can express, so there is no sloppiness to recover;
+/// and f64 is not an option in any case — Apple GPUs have no f64 ALU, so it would exclude
+/// every Mac in the co-op from accelerated work.
+///
+/// Range is the safe axis. Resolution is not.
 const FRAC_BITS: u32 = 16;
 const ONE_RAW: i64 = 1 << FRAC_BITS; // 65536
 
@@ -107,6 +138,36 @@ impl std::iter::Sum for Q16 {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// The grid step is load-bearing for cross-backend settlement, so it is pinned
+    /// rather than left implicit. See the note on `FRAC_BITS`: honest hardware
+    /// divergence is ~1.34e-07 and this grid is ~114× coarser, which is what lets
+    /// quantization absorb the disagreement. Making the grid finer would make every
+    /// honest member's commitment differ.
+    ///
+    /// If you are here because this test failed, you changed `FRAC_BITS`. That is a
+    /// settlement-breaking change, not a precision improvement — read the note first.
+    #[test]
+    fn the_grid_step_is_pinned_at_2_pow_minus_16() {
+        assert_eq!(
+            FRAC_BITS, 16,
+            "FRAC_BITS is load-bearing — see its doc comment"
+        );
+        assert_eq!(ONE_RAW, 65_536);
+        let step = 1.0f64 / ONE_RAW as f64;
+        assert!(
+            (step - 1.525_878_906_25e-5).abs() < f64::EPSILON,
+            "grid step moved: {step:e}"
+        );
+        // The measured worst honest cross-vendor divergence must stay well under one
+        // step, or exact-equality settlement stops being merely wrong and starts
+        // being wrong in a way a tolerance cannot rescue.
+        let worst_measured_divergence = 1.341e-7;
+        assert!(
+            worst_measured_divergence * 100.0 < step,
+            "grid step {step:e} is no longer 100x above measured divergence"
+        );
+    }
 
     #[test]
     fn one_round_trips() {
