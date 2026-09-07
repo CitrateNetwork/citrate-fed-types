@@ -47,7 +47,12 @@ use serde::{Deserialize, Serialize};
 /// every Mac in the co-op from accelerated work.
 ///
 /// Range is the safe axis. Resolution is not.
-const FRAC_BITS: u32 = 16;
+///
+/// Exported (`pub`) so every downstream consumer of this "bit-for-bit boundary" crate reads
+/// the scale from one place instead of hardcoding `16`/`65536` on its own settlement path
+/// (finding FT-B-005). The pinning test still guards the value; the export removes the trap
+/// where a future change here would silently mis-scale a copy that never saw it.
+pub const FRAC_BITS: u32 = 16;
 const ONE_RAW: i64 = 1 << FRAC_BITS; // 65536
 
 /// A Q16.16 fixed-point number. Serializes as its raw integer so the encoding is exact
@@ -55,13 +60,55 @@ const ONE_RAW: i64 = 1 << FRAC_BITS; // 65536
 #[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Serialize, Deserialize)]
 pub struct Q16(i64);
 
+/// Why an `f32` could not be quantized *injectively* onto the Q16 grid (finding FT-B-007).
+/// The saturating [`Q16::from_f32`] stays total for the hot reduction path; this is the
+/// fallible sibling the untrusted-input boundaries (`lora_commitment`, settlement ingest)
+/// use so a coercion becomes a visible refusal instead of a silent wrong answer.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum Q16Error {
+    /// `NaN`/`±∞` — no grid point; [`Q16::from_f32`] would map it to raw `0`.
+    NonFinite,
+    /// A finite magnitude whose Q16 image saturates the `i64` grid (`|v| ≳ 1.407e14`), so it
+    /// collides with every other saturating magnitude on the same raw.
+    OutOfRange,
+}
+
+impl std::fmt::Display for Q16Error {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        match self {
+            Q16Error::NonFinite => write!(f, "Q16: non-finite f32 (NaN/±inf) has no grid point"),
+            Q16Error::OutOfRange => write!(f, "Q16: f32 magnitude saturates the Q16 grid"),
+        }
+    }
+}
+impl std::error::Error for Q16Error {}
+
 impl Q16 {
     pub const ZERO: Q16 = Q16(0);
     pub const ONE: Q16 = Q16(ONE_RAW);
 
+    /// The raw integer value of `1.0` — the grid scale `2^FRAC_BITS`. Exported so a consumer
+    /// truncates/scales via `raw / Q16::SCALE` rather than a hardcoded `>> 16` (FT-B-005).
+    pub const SCALE: i64 = ONE_RAW;
+
     /// Construct from a raw Q16.16 integer (value = raw / 2^16).
     pub const fn from_raw(raw: i64) -> Self {
         Q16(raw)
+    }
+
+    /// Fallible quantization for untrusted input: refuses the exact domain on which
+    /// [`Q16::from_f32`] stops being injective — non-finite (would collapse to `0`) and
+    /// saturating-finite (would collapse to `±i64::MAX`) (finding FT-B-007). Returns the same
+    /// raw as `from_f32` for every value it accepts, so it is golden-preserving.
+    pub fn try_from_f32(v: f32) -> Result<Self, Q16Error> {
+        if !v.is_finite() {
+            return Err(Q16Error::NonFinite);
+        }
+        let scaled = (v as f64) * (ONE_RAW as f64);
+        if scaled.abs() >= i64::MAX as f64 {
+            return Err(Q16Error::OutOfRange);
+        }
+        Ok(Q16(scaled.round() as i64))
     }
 
     /// The underlying raw integer. This is what gets hashed and committed.
@@ -154,6 +201,10 @@ mod tests {
             "FRAC_BITS is load-bearing — see its doc comment"
         );
         assert_eq!(ONE_RAW, 65_536);
+        // FT-B-005: the exported scale must equal the internal one — a consumer that reads
+        // `Q16::SCALE` / `FRAC_BITS` gets the same grid the committed bytes ride.
+        assert_eq!(Q16::SCALE, ONE_RAW);
+        assert_eq!(FRAC_BITS, 16);
         let step = 1.0f64 / ONE_RAW as f64;
         assert!(
             (step - 1.525_878_906_25e-5).abs() < f64::EPSILON,
@@ -242,6 +293,24 @@ mod tests {
         assert_eq!(Q16::from_f32(f32::NEG_INFINITY), Q16::ZERO);
         // finite values are unchanged (golden-preserving).
         assert_eq!(Q16::from_f32(0.9).raw(), 58982);
+    }
+
+    /// FT-B-007: the fallible constructor refuses exactly the non-injective domain of
+    /// `from_f32` (non-finite, saturating-finite) and otherwise returns the identical raw.
+    #[test]
+    fn try_from_f32_refuses_non_injective_domain_only() {
+        assert_eq!(Q16::try_from_f32(f32::NAN), Err(Q16Error::NonFinite));
+        assert_eq!(Q16::try_from_f32(f32::INFINITY), Err(Q16Error::NonFinite));
+        assert_eq!(
+            Q16::try_from_f32(f32::NEG_INFINITY),
+            Err(Q16Error::NonFinite)
+        );
+        assert_eq!(Q16::try_from_f32(2.0e14), Err(Q16Error::OutOfRange));
+        assert_eq!(Q16::try_from_f32(3.0e38), Err(Q16Error::OutOfRange));
+        // every accepted value matches the saturating constructor exactly (golden-preserving).
+        for v in [0.0f32, 0.9, -1.0, 4000.0, 1e-6, -2.5] {
+            assert_eq!(Q16::try_from_f32(v).unwrap(), Q16::from_f32(v));
+        }
     }
 
     #[test]

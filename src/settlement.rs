@@ -8,10 +8,39 @@
 //! `patronage_units_match_onchain_ledger` reproduces the `FederatedSettlement.t.sol`
 //! golden cases (`4000 / 1800 / 500`) — the proof this extraction did not drift.
 
-use crate::fixed::Q16;
+use crate::fixed::{Q16Error, Q16};
 
 /// Basis-points scale (`1.0 == 10_000 bps`), matching the Solidity ledger.
 pub const BPS_SCALE: u32 = 10_000;
+
+/// Why a [`SettlementRow`] could not be constructed from untrusted factors (finding
+/// FT-B-007/FT-B-008). The infallible [`SettlementRow::new`] stays for internal, already-valid
+/// callers; the money-path ingest uses [`SettlementRow::try_new`] so an invalid row is refused
+/// at birth rather than silently corrected by one accessor and not another.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum SettlementError {
+    /// `compute_metered` is negative — negative work is not billable.
+    NegativeCompute,
+    /// `data_quality` is outside `[0, 1]` — an honesty factor cannot exceed unity nor go below zero.
+    QualityOutOfRange,
+    /// A factor was a non-finite / saturating `f32`.
+    BadFactor(Q16Error),
+}
+
+impl std::fmt::Display for SettlementError {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        match self {
+            SettlementError::NegativeCompute => {
+                write!(f, "settlement: compute_metered is negative")
+            }
+            SettlementError::QualityOutOfRange => {
+                write!(f, "settlement: data_quality outside [0,1]")
+            }
+            SettlementError::BadFactor(e) => write!(f, "settlement: {e}"),
+        }
+    }
+}
+impl std::error::Error for SettlementError {}
 
 /// A single unified settlement record carrying the **two factors explicitly** —
 /// `compute_metered` and `data_quality` — so the co-op ledger computes units itself and
@@ -52,6 +81,33 @@ impl SettlementRow {
         }
     }
 
+    /// Parse-don't-validate constructor for untrusted factors (finding FT-B-007/FT-B-008):
+    /// rejects a negative `compute_metered` and a `data_quality` outside `[0,1]` at
+    /// construction, so a row that reaches the accessors is already valid and the two
+    /// settlement seams (`reward_weight` vs `patronage_units`) cannot disagree on it. The
+    /// infallible [`SettlementRow::new`] remains for callers holding already-validated Q16s.
+    pub fn try_new(
+        node_id: impl Into<String>,
+        compute_metered: Q16,
+        data_quality: Q16,
+        zone_tag: Option<u8>,
+        trace_hash: impl Into<String>,
+    ) -> Result<Self, SettlementError> {
+        if compute_metered.raw() < 0 {
+            return Err(SettlementError::NegativeCompute);
+        }
+        if data_quality.raw() < 0 || data_quality.raw() > Q16::ONE.raw() {
+            return Err(SettlementError::QualityOutOfRange);
+        }
+        Ok(SettlementRow::new(
+            node_id,
+            compute_metered,
+            data_quality,
+            zone_tag,
+            trace_hash,
+        ))
+    }
+
     /// The collapsed reward weight `compute × data_quality`.
     ///
     /// Fail-closed like its sibling accessors (`compute_units`, `data_quality_bps`): the
@@ -75,8 +131,12 @@ impl SettlementRow {
     }
 
     /// `compute_metered` (Q16) as the on-chain integer `computeMetered` unit count.
+    ///
+    /// Derives the truncation from the one exported grid scale (`Q16::SCALE`) rather than a
+    /// second hardcoded `>> 16` (finding FT-B-005). For a non-negative raw, `/ Q16::SCALE`
+    /// equals the old arithmetic shift bit-for-bit, so the golden is preserved.
     pub fn compute_units(&self) -> u128 {
-        (self.compute_metered.raw().max(0) >> 16) as u128
+        (self.compute_metered.raw().max(0) / Q16::SCALE) as u128
     }
 
     /// The on-chain `recordContribution` call shape for this row.
@@ -143,6 +203,42 @@ mod tests {
             bad.patronage_units(BPS_SCALE, BPS_SCALE) > 0,
             "the two settlement seams must agree on the sign of the reward"
         );
+    }
+
+    /// FT-B-007/FT-B-008: `try_new` refuses an invalid row at construction — the precondition
+    /// that a bare `new()` lets slip through to exactly one of four accessors.
+    #[test]
+    fn try_new_rejects_invalid_rows_at_construction() {
+        assert_eq!(
+            SettlementRow::try_new("n", Q16::from_f32(-1.0), Q16::from_f32(1.0), None, "t"),
+            Err(SettlementError::NegativeCompute)
+        );
+        assert_eq!(
+            SettlementRow::try_new("n", Q16::from_f32(10.0), Q16::from_f32(1000.0), None, "t"),
+            Err(SettlementError::QualityOutOfRange)
+        );
+        assert_eq!(
+            SettlementRow::try_new("n", Q16::from_f32(10.0), Q16::from_f32(-0.5), None, "t"),
+            Err(SettlementError::QualityOutOfRange)
+        );
+        // a well-formed row constructs, and both seams then agree on its sign.
+        let ok = SettlementRow::try_new("n", Q16::from_f32(10.0), Q16::from_f32(0.5), None, "t")
+            .expect("valid row");
+        assert!(ok.reward_weight().raw() > 0);
+        assert!(ok.patronage_units(BPS_SCALE, BPS_SCALE) > 0);
+    }
+
+    /// FT-B-005: `compute_units` truncates via the exported `Q16::SCALE`, and a Q16 `1.0`
+    /// must map to exactly one unit — the ratchet that pins the second copy of the scale to
+    /// the first. If `FRAC_BITS` ever moves, both this and the grid-step test fail together.
+    #[test]
+    fn compute_units_derives_from_the_exported_scale() {
+        assert_eq!(row(1.0, 1.0).compute_units(), 1);
+        // the derivation equals the historical `>> 16` for every non-negative raw.
+        for raw in [65_535_i64, 65_536, 131_071, i64::MAX] {
+            let r = SettlementRow::new("n", Q16::from_raw(raw), Q16::ONE, None, "t");
+            assert_eq!(r.compute_units(), (raw.max(0) >> 16) as u128);
+        }
     }
 
     // PARITY ANCHOR — reproduces FederatedSettlement.t.sol::test_coordinator_settles_round
