@@ -261,16 +261,44 @@ pub fn aggregate(
         })
         .collect();
 
-    let digest = digest_of(&aggregate);
+    let digest = round_digest(&aggregate, trim, bucket_count, seed);
     Ok(AggregateResult { aggregate, digest })
 }
 
-/// `H(raw Q16 little-endian bytes)` of an aggregate vector — the deterministic commitment
-/// an auditor recomputes (and the on-chain challenge anchors). No floats; the raw `i64`s
-/// are the canonical bytes.
+/// Domain string for every aggregate-side commitment (finding FT-B-003), mirroring
+/// `lora`'s `nat-lora-commit-v1`. Prevents an unprefixed SHA-256 of an 8-byte-aligned blob
+/// from being mistaken for an aggregate digest, and denies the empty-vector digest the
+/// well-known SHA-256-of-empty constant.
+const AGG_DOMAIN: &[u8] = b"nat-aggregate-digest-v1";
+
+/// Domain-separated, length-framed digest of an aggregate vector (finding FT-B-003): the
+/// deterministic commitment an auditor recomputes. `H(domain || len || raw i64 LE…)`. No
+/// floats; the raw `i64`s are the canonical bytes. The length prefix removes the
+/// variable-length padding ambiguity a bare concatenation carries.
 pub fn digest_of(v: &[Q16]) -> String {
     let mut h = Sha256::new();
+    h.update(AGG_DOMAIN);
+    h.update((v.len() as u64).to_le_bytes());
     for q in v {
+        h.update(q.raw().to_le_bytes());
+    }
+    hex(&h.finalize())
+}
+
+/// The round commitment the on-chain challenge anchors (finding FT-B-003): binds the
+/// aggregate *and the parameters that produced it* — `seed`, `trim`, `bucket_count`, `dim` —
+/// so a coordinator cannot grind a favourable `(seed, trim, bucket_count)` after seeing
+/// submissions and still present a digest that "verifies". `H(domain || seed_len || seed ||
+/// trim || bucket_count || dim || len || raw i64 LE…)`.
+pub fn round_digest(aggregate: &[Q16], trim: usize, bucket_count: usize, seed: &[u8]) -> String {
+    let mut h = Sha256::new();
+    h.update(AGG_DOMAIN);
+    h.update((seed.len() as u64).to_le_bytes());
+    h.update(seed);
+    h.update((trim as u64).to_le_bytes());
+    h.update((bucket_count as u64).to_le_bytes());
+    h.update((aggregate.len() as u64).to_le_bytes());
+    for q in aggregate {
         h.update(q.raw().to_le_bytes());
     }
     hex(&h.finalize())
@@ -468,11 +496,14 @@ mod tests {
         assert_eq!(bucket_of(b"seed", "node", 0), 0);
     }
 
-    // PARITY ANCHOR — must reproduce the `nat-aggregate` frozen golden bit-for-bit. If
-    // this differs, the extraction drifted from the source of truth (the whole point of
-    // the boundary is that it cannot). Inputs identical to nat-aggregate::frozen_aggregate_digest.
+    // CANDIDATE RE-FROZEN ANCHOR (FT-B-003 / NAT2-B-008) — HELD, NOT a merged golden.
+    // The round digest now binds a domain string + (seed, trim, bucket_count, dim), so it no
+    // longer equals the pre-fix bare-concatenation golden `e79c5a63…`. This value locks the
+    // NEW preimage for self-consistency ONLY; the real re-freeze must be performed jointly by
+    // the owner across nat-aggregate (NAT2-B-002/003) and the Solidity challenge re-executor,
+    // which must recompute their golden through the identical framing before this lands.
     #[test]
-    fn frozen_aggregate_digest_matches_nat() {
+    fn round_digest_is_frozen_candidate() {
         let g = vec![
             pg("alpha", &[1.0, -2.0, 3.5]),
             pg("beta", &[2.0, -1.0, 3.0]),
@@ -481,8 +512,40 @@ mod tests {
         ];
         let r = aggregate(&g, 1, 64, b"frozen-seed-v1").expect("aggregate");
         assert_eq!(
-            r.digest, "e79c5a6381c2e761f264d1c64dfdf12016c08ca3494ee909736ec84d00aa59a1",
-            "fed-types aggregate digest diverged from nat-aggregate — extraction drifted"
+            r.digest, "9c8597653a4762ecb709c74956abbd40d132997d9579ee742edb9f8cb80a28b7",
+            "round_digest preimage drifted from the FT-B-003 candidate framing"
         );
+    }
+
+    /// FT-B-003: `digest_of` is domain-separated and length-framed — it is NOT reproducible
+    /// by a bare unprefixed SHA-256 of the same raw bytes, and the empty aggregate does not
+    /// hash to the well-known SHA-256-of-empty constant.
+    #[test]
+    fn digest_of_is_domain_separated_and_length_framed() {
+        use sha2::{Digest, Sha256};
+        let v = [Q16::from_f32(1.0), Q16::from_f32(-2.0)];
+        // a bare sha256 over the same bytes (the pre-fix preimage) must NOT match.
+        let mut bare = Sha256::new();
+        for q in &v {
+            bare.update(q.raw().to_le_bytes());
+        }
+        assert_ne!(digest_of(&v), hex(&bare.finalize()));
+        // the empty aggregate is not the universally-known empty-string digest.
+        assert_ne!(
+            digest_of(&[]),
+            "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855"
+        );
+    }
+
+    /// FT-B-003: the round digest binds the parameters that produced the aggregate, so two
+    /// runs that differ only in `trim`, `bucket_count`, or `seed` cannot share a digest even
+    /// when they happen to yield the same aggregate vector.
+    #[test]
+    fn round_digest_binds_round_parameters() {
+        let v = [Q16::from_f32(1.0), Q16::from_f32(2.0)];
+        let base = round_digest(&v, 1, 64, b"seed");
+        assert_ne!(base, round_digest(&v, 2, 64, b"seed")); // trim
+        assert_ne!(base, round_digest(&v, 1, 128, b"seed")); // bucket_count
+        assert_ne!(base, round_digest(&v, 1, 64, b"other-seed")); // seed
     }
 }
