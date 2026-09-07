@@ -28,6 +28,37 @@ pub struct LoraFactors {
     pub matrix_b: Vec<Vec<f32>>,
 }
 
+impl LoraFactors {
+    /// Parse-don't-validate constructor (finding FT-B-008): builds a [`LoraFactors`] only if
+    /// its matrices match the declared `rank`/`dim_out`/`dim_in` and every weight lands
+    /// injectively on the Q16 grid — the exact invariants [`lora_commitment`] enforces. A
+    /// consumer that reads `.rank` or iterates `.matrix_b` before committing then indexes a
+    /// structure that is already valid, rather than one only the commitment path checks.
+    #[allow(clippy::too_many_arguments)]
+    pub fn try_new(
+        zone_tag: u8,
+        rank: usize,
+        dim_out: usize,
+        dim_in: usize,
+        alpha: f32,
+        matrix_a: Vec<Vec<f32>>,
+        matrix_b: Vec<Vec<f32>>,
+    ) -> Result<Self, LoraError> {
+        let factors = LoraFactors {
+            zone_tag,
+            rank,
+            dim_out,
+            dim_in,
+            alpha,
+            matrix_a,
+            matrix_b,
+        };
+        validate_shape(&factors)?;
+        validate_values(&factors)?;
+        Ok(factors)
+    }
+}
+
 /// Why a [`LoraFactors`] could not be committed: its matrices do not match the declared
 /// `rank` / `dim_out` / `dim_in` (finding H1). The chain recomputes this commitment to
 /// verify an untrusted registration, so a shape-malformed payload must be *rejected*, not
@@ -301,6 +332,54 @@ mod tests {
         poison.matrix_a[0][0] = f32::NAN;
         assert!(lora_commitment(&zero).is_ok());
         assert_ne!(lora_commitment(&zero), lora_commitment(&poison));
+    }
+
+    /// FT-B-008: `try_new` validates shape *and* value domain at construction, so an invalid
+    /// `LoraFactors` cannot be built through the safe path — and a valid one commits infallibly.
+    #[test]
+    fn try_new_validates_at_construction() {
+        // shape-malformed is rejected.
+        assert!(matches!(
+            LoraFactors::try_new(
+                0,
+                2,
+                4,
+                3,
+                1.0,
+                vec![vec![0.1, 0.2, 0.3]],
+                vec![vec![1.0, 0.0]]
+            ),
+            Err(LoraError::ShapeMismatch { .. })
+        ));
+        // a poison (non-finite) weight is rejected even with correct shape.
+        assert!(matches!(
+            LoraFactors::try_new(
+                3,
+                2,
+                4,
+                3,
+                f32::NAN,
+                vec![vec![0.0; 3]; 2],
+                vec![vec![0.0; 2]; 4]
+            ),
+            Err(LoraError::NonFiniteWeight { .. })
+        ));
+        // the well-formed sample constructs and reproduces the frozen commitment.
+        let s = sample();
+        let built = LoraFactors::try_new(
+            s.zone_tag,
+            s.rank,
+            s.dim_out,
+            s.dim_in,
+            s.alpha,
+            s.matrix_a.clone(),
+            s.matrix_b.clone(),
+        )
+        .expect("valid factors");
+        assert_eq!(
+            lora_commitment(&built).unwrap(),
+            lora_commitment(&s).unwrap()
+        );
     }
 
     // Frozen golden over an explicit fixture (the kernel's own ratchet). The cross-crate
