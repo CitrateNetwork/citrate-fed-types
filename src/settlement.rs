@@ -53,8 +53,16 @@ impl SettlementRow {
     }
 
     /// The collapsed reward weight `compute × data_quality`.
+    ///
+    /// Fail-closed like its sibling accessors (`compute_units`, `data_quality_bps`): the
+    /// compute factor is floored at 0 and the quality factor is clamped to `[0,1]` *before*
+    /// the multiply (finding FT-B-002). Without these guards a bare `Q16::mul` turns two
+    /// negatives into a positive reward and lets `quality>1` inflate the weight — the legacy
+    /// `seam::Settlement` payout path consumes this value directly.
     pub fn reward_weight(&self) -> Q16 {
-        self.compute_metered.mul(self.data_quality)
+        let compute = Q16::from_raw(self.compute_metered.raw().max(0));
+        let quality = Q16::from_raw(self.data_quality.raw().clamp(0, Q16::ONE.raw()));
+        compute.mul(quality)
     }
 
     /// `data_quality` (Q16 in [0,1]) as the on-chain `dataQualityBps` (u16 in [0,10000]).
@@ -108,6 +116,33 @@ mod tests {
         assert_eq!(row(1.0, 0.9).data_quality_bps(), 9000); // not 8999
         assert_eq!(row(1.0, 0.5).data_quality_bps(), 5000);
         assert_eq!(row(1.0, 1.0).data_quality_bps(), 10000);
+    }
+
+    /// FT-B-002 tripwire: `reward_weight()` — consumed by the legacy `seam::Settlement`
+    /// payout path — must apply the same [0,1] quality clamp and non-negativity guard its
+    /// sibling accessors (`compute_units`, `data_quality_bps`) already apply. Without them a
+    /// bare `Q16::mul` turns two negatives into a positive reward and lets `quality>1` inflate.
+    #[test]
+    fn reward_weight_is_fail_closed_like_its_siblings() {
+        // (-4000) * (-1.0) must NOT become +4000: negative work is worth zero, not full pay.
+        let bad = row(-4000.0, -1.0);
+        assert_eq!(
+            bad.reward_weight().raw(),
+            0,
+            "two negatives must not multiply into a positive reward"
+        );
+        // quality clamped to [0,1] — it cannot inflate the weight above compute * 1.0.
+        let inflated = row(10.0, 1000.0);
+        assert!(
+            inflated.reward_weight().raw() <= Q16::from_f32(10.0).raw(),
+            "out-of-range quality must be clamped, not passed through as a 1000x multiplier"
+        );
+        // sign-consistency with the unified/on-chain replica path.
+        assert_eq!(
+            bad.reward_weight().raw() > 0,
+            bad.patronage_units(BPS_SCALE, BPS_SCALE) > 0,
+            "the two settlement seams must agree on the sign of the reward"
+        );
     }
 
     // PARITY ANCHOR — reproduces FederatedSettlement.t.sol::test_coordinator_settles_round
