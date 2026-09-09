@@ -1,0 +1,21 @@
+name: ci
+
+# Hardened CI baseline (pre-public). Inherits the org reusable workflows from
+# CitrateNetwork/.github, pinned to a full commit SHA (supply-chain).
+# fed-types is consumed cross-repo, so secret-scan + Rust CI gate it before it
+# becomes the public dependency root. Tune on first green run once billing is back.
+
+on:
+  push:
+    branches: [main]
+  pull_request: {}
+
+permissions:
+  contents: read
+
+jobs:
+  secret-scan:
+    uses: CitrateNetwork/.github/.github/workflows/reusable-secret-scan.yml@5d24169b7acf6533b1eaba2399a25effc6c346d6
+
+  rust:
+    uses: CitrateNetwork/.github/.github/workflows/reusable-rust-ci.yml@5d24169b7acf6533b1eaba2399a25effc6c346d6
