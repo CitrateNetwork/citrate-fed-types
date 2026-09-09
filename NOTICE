@@ -1,0 +1,26 @@
+Citrate Network
+© 2026 Citrate Inc.
+
+This repository is a component of the Citrate Network and is licensed under the
+Apache License, Version 2.0 (see LICENSE). Other components of the Citrate
+Network are distributed under the Business Source License 1.1; each repository's
+own LICENSE file governs that repository.
+
+Trademarks
+==========
+"Citrate", "Citrate Network", "Citrate OpenWallet", and "SALT" are trademarks of
+Citrate Inc. The Apache-2.0 license is a copyright license and does not grant any
+trademark rights. See TRADEMARK.md.
+
+Patents
+=======
+Apache-2.0 (Section 3) grants a patent license, from each contributor, for the
+code in this repository. Citrate Inc. separately holds and reserves patent rights
+in Citrate Network mechanisms (see PATENTS.md); practicing those patented
+mechanisms beyond this Apache-licensed code — for example, operating a public or
+hosted Citrate network — may require a separate written patent license.
+
+Contact
+=======
+Partnerships, commercial licensing, and IP inquiries: Partnerships@Citrate.ai
+Security and vulnerability disclosure: security@citrate.ai
