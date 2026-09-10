@@ -1,35 +1,79 @@
 # citrate-fed-types
+> The audited, deterministic Rust boundary crate shared between the Citrate chain and the federated-meta-learning research code — the math both sides must agree on **bit-for-bit**.
 
-The **audited deterministic boundary** between the federated meta-learning research crates
-(in the `nat` repo) and the production chain (`citrate-chain`) — Gate-4 WP-W0 of the
-Federated Meta-Learning program.
+## What it is
+`citrate-fed-types` carries only the deterministic contracts the production chain
+([citrate-chain](https://github.com/CitrateNetwork/citrate-chain)) and the federated
+meta-learning research crates must reproduce identically: the `Q16` fixed-point grid, the
+bucketed coordinate trimmed-mean aggregation + digest (`aggregate` / `digest_of` /
+`bucket_of`), the `SettlementRow` patronage-unit math, the LoRA `(A,B)` commitment, and the
+`ChainCommit` / `Settlement` / `UnifiedSettlement` seam traits. No research ML — no model,
+encoder, generator, or `f32` path. Every symbol is a faithful extraction that reproduces the
+frozen golden digests (aggregate → `e79c5a63…`; settlement units → `4000 / 1800 / 500`), which
+is the audit evidence the extraction did not drift. Dependencies are `serde` + `sha2` only.
 
-At Gate-4 the chain must execute the *same deterministic computations* a `nat` node did —
-re-run an aggregation to adjudicate a challenge, recompute a committed digest, reconcile
-patronage units — **without** the consensus-critical chain build depending on the maturing
-research repo. This crate is that boundary: **only the contracts both sides must agree on
-bit-for-bit, and none of the research ML.**
+See the concepts in the docs: <https://docs.citrate.ai>.
 
-## Modules
-| Module | Contract |
-|--------|----------|
-| `fixed` | `Q16` fixed-point grid (the quantization boundary) |
-| `aggregate` | bucketed coordinate trimmed-mean + `digest_of` + `bucket_of` (the challenge re-executes this) |
-| `settlement` | `SettlementRow` patronage math — the `PatronageLedger` unit replica |
-| `lora` | `lora_commitment` over explicit `(A,B)` factors — `LoRAFactory.adapterModelCommitment` |
-| `seam` | `ChainCommit` / `Settlement` / `UnifiedSettlement` trait shapes (interface only) |
+## Prerequisites
+```bash
+# Toolchain is pinned by rust-toolchain.toml (channel 1.96.0, with rustfmt + clippy).
+# rustup will auto-install the pinned toolchain on first cargo invocation.
+rustup --version
+cargo --version   # resolves to the pinned 1.96.0 inside the repo
+```
 
-## Faithful-extraction guarantee
-Every symbol is a faithful copy of proven `nat` code, so it reproduces the existing frozen
-golden digests — the audit evidence that the extraction did not drift:
-- `aggregate::frozen_aggregate_digest_matches_nat` → `e79c5a63…` (== `nat-aggregate`)
-- `settlement::patronage_units_match_onchain_ledger` → `4000 / 1800 / 500` (== `FederatedSettlement.t.sol`)
+## Build from source
+```bash
+git clone https://github.com/CitrateNetwork/citrate-fed-types.git
+cd citrate-fed-types
+cargo build            # compiles the library crate
+cargo test             # runs unit tests INCLUDING the frozen-digest parity checks
+./scripts/ci-local.sh  # full local gate: fmt --check, clippy -D warnings, test
+```
+Expected: a library rlib under `target/`. There is no binary. The parity tests
+(`frozen_aggregate_digest_matches_nat`, `patronage_units_match_onchain_ledger`) must pass —
+they are the guarantee that committed bytes have not moved. Build is small and fast.
 
-Domain strings + serialization are preserved verbatim, so when the `nat` crates adopt this
-kernel and delete their copies, **no committed byte moves**.
+## Run locally
+This is a pure library crate — nothing to run, no ports, no network, no env. Exercise it via
+its tests, or depend on it from another crate:
 
-## What is deliberately NOT here
-The GMN encoder, the LoRA generator + meta-training, federated distillation, the model, and
-every `f32` research path. The chain links the kernel, not the laboratory.
+```rust
+use citrate_fed_types::Q16;
+use citrate_fed_types::aggregate::{aggregate, digest_of};
+// deterministic: same inputs → same digest on every machine and every node.
+```
+Verify it's working: `cargo test` is green and prints the parity tests passing.
 
-See `citrate-federation/.agentile/adrs/ADR-2026-06-28-fed-types-boundary.md`.
+## Connect it locally  ← the differentiator
+This crate is "connected" by being a **dependency**, not a service. To wire it into a local
+Citrate build so both sides share one deterministic kernel:
+
+1. Clone it beside your other checkouts (e.g. next to `citrate-chain`).
+2. Add it as a path (or git) dependency in the consuming crate's `Cargo.toml`:
+   ```toml
+   [dependencies]
+   citrate-fed-types = { path = "../citrate-fed-types" }
+   # or, pinned by revision:
+   # citrate-fed-types = { git = "https://github.com/CitrateNetwork/citrate-fed-types.git", rev = "<sha>" }
+   ```
+3. Build the consumer (`cargo build` in citrate-chain). Because the toolchain is pinned to
+   `1.96.0` on both sides, the aggregation/settlement/LoRA results are byte-identical to what
+   a federated node produced — which is exactly what a Gate-4 challenge re-execution needs.
+4. End-to-end check: `cargo test` in the consuming crate; the shared golden digests
+   (`e79c5a63…`, `4000/1800/500`) match on both sides.
+
+For the full multi-repo bring-up, see the LOCAL_STACK guide at <https://docs.citrate.ai>.
+
+## Configuration
+None. No env vars, no config files, no network endpoints — determinism is the point. The only
+"configuration" is the pinned toolchain in `rust-toolchain.toml` (channel `1.96.0`), which
+every consumer must match to reproduce the golden digests.
+
+## Links
+- Docs: <https://docs.citrate.ai>
+- Consumed by: [citrate-chain](https://github.com/CitrateNetwork/citrate-chain) (challenge re-execution + settlement) and the federated meta-learning research crates
+- Contributing (DCO): `CONTRIBUTING.md` · Security: `SECURITY.md` · License: [`LICENSE`](LICENSE)
+
+## License
+Apache-2.0.
