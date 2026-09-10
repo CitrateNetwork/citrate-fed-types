@@ -1,0 +1,71 @@
+   Compiling citrate-fed-types v0.1.0 (/home/saul/Projects/Citrate-Labs/citrate-fed-types)
+    Finished `test` profile [unoptimized + debuginfo] target(s) in 0.45s
+     Running unittests src/lib.rs (target/debug/deps/citrate_fed_types-4963717093e720b5)
+
+running 28 tests
+test aggregate::tests::aggregate_rejects_overflowing_trim ... ok
+test aggregate::tests::determinism_and_order_independence ... ok
+test fixed::tests::from_f32_maps_non_finite_to_zero ... ok
+test fixed::tests::mul_is_exact_on_grid ... ok
+test aggregate::tests::aggregate_rejects_pathological_bucket_count ... ok
+test aggregate::tests::fails_closed ... ok
+test aggregate::tests::frozen_aggregate_digest_matches_nat ... ok
+test fixed::tests::determinism_same_inputs_same_bits ... ok
+test aggregate::tests::bucket_of_does_not_panic_on_zero ... ok
+test fixed::tests::div_by_zero_saturates_by_sign ... ok
+test fixed::tests::mul_saturates_on_extreme_not_sign_flip ... ok
+test fixed::tests::one_round_trips ... ok
+test fixed::tests::the_grid_step_is_pinned_at_2_pow_minus_16 ... ok
+test aggregate::tests::byzantine_outliers_trimmed_within_honest_band ... ok
+test lora::tests::lora_commitment_is_frozen ... ok
+test lora::tests::deterministic_and_tamper_detecting ... ok
+test seam::tests::seam_traits_drive_the_kernel_math ... ok
+test fixed::tests::from_f32_rounds_to_nearest_ties_away ... ok
+test lora::tests::lora_commitment_refuses_non_finite_weights ... FAILED
+test lora::tests::lora_commitment_binds_poison_apart_from_zero ... FAILED
+test lora::tests::lora_commitment_rejects_malformed_shape ... ok
+test lora::tests::lora_commitment_refuses_saturating_weights ... FAILED
+test lora::tests::rank_atom_order_independent ... ok
+test settlement::tests::data_quality_bps_rounds_to_nearest ... ok
+test settlement::tests::patronage_units_match_onchain_ledger ... ok
+test settlement::tests::patronage_units_match_onchain_under_non_unit_weights ... ok
+test fixed::tests::add_sub_saturate_not_panic_or_wrap ... ok
+test settlement::tests::reward_weight_is_fail_closed_like_its_siblings ... FAILED
+
+failures:
+
+---- lora::tests::lora_commitment_refuses_non_finite_weights stdout ----
+
+thread 'lora::tests::lora_commitment_refuses_non_finite_weights' (375386) panicked at src/lora.rs:219:9:
+assertion failed: lora_commitment(&nan_a).is_err()
+
+---- lora::tests::lora_commitment_binds_poison_apart_from_zero stdout ----
+
+thread 'lora::tests::lora_commitment_binds_poison_apart_from_zero' (375384) panicked at src/lora.rs:252:9:
+assertion `left != right` failed
+  left: Ok("c20093474d0e6e770e8351da9da2f657207ed832bf9af5f323c80053ff5e9d9c")
+ right: Ok("c20093474d0e6e770e8351da9da2f657207ed832bf9af5f323c80053ff5e9d9c")
+note: run with `RUST_BACKTRACE=1` environment variable to display a backtrace
+
+---- lora::tests::lora_commitment_refuses_saturating_weights stdout ----
+
+thread 'lora::tests::lora_commitment_refuses_saturating_weights' (375387) panicked at src/lora.rs:232:9:
+assertion failed: lora_commitment(&big).is_err()
+
+---- settlement::tests::reward_weight_is_fail_closed_like_its_siblings stdout ----
+
+thread 'settlement::tests::reward_weight_is_fail_closed_like_its_siblings' (375398) panicked at src/settlement.rs:121:9:
+assertion `left == right` failed: two negatives must not multiply into a positive reward
+  left: 262144000
+ right: 0
+
+
+failures:
+    lora::tests::lora_commitment_binds_poison_apart_from_zero
+    lora::tests::lora_commitment_refuses_non_finite_weights
+    lora::tests::lora_commitment_refuses_saturating_weights
+    settlement::tests::reward_weight_is_fail_closed_like_its_siblings
+
+test result: FAILED. 24 passed; 4 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.00s
+
+error: test failed, to rerun pass `--lib`

@@ -1,0 +1,42 @@
+   Compiling citrate-fed-types v0.1.0 (/home/saul/Projects/Citrate-Labs/citrate-fed-types)
+    Finished `test` profile [unoptimized + debuginfo] target(s) in 2.00s
+     Running unittests src/lib.rs (target/debug/deps/citrate_fed_types-4963717093e720b5)
+
+running 28 tests
+test lora::tests::deterministic_and_tamper_detecting ... ok
+test fixed::tests::the_grid_step_is_pinned_at_2_pow_minus_16 ... ok
+test aggregate::tests::aggregate_rejects_pathological_bucket_count ... ok
+test lora::tests::lora_commitment_binds_poison_apart_from_zero ... ok
+test fixed::tests::from_f32_rounds_to_nearest_ties_away ... ok
+test fixed::tests::mul_is_exact_on_grid ... ok
+test fixed::tests::add_sub_saturate_not_panic_or_wrap ... ok
+test fixed::tests::determinism_same_inputs_same_bits ... ok
+test lora::tests::lora_commitment_rejects_malformed_shape ... ok
+test lora::tests::rank_atom_order_independent ... ok
+test settlement::tests::data_quality_bps_rounds_to_nearest ... ok
+test settlement::tests::patronage_units_match_onchain_ledger ... ok
+test lora::tests::lora_commitment_is_frozen ... ok
+test aggregate::tests::byzantine_outliers_trimmed_within_honest_band ... ok
+test aggregate::tests::frozen_aggregate_digest_matches_nat ... ok
+test lora::tests::lora_commitment_refuses_saturating_weights ... ok
+test aggregate::tests::bucket_of_does_not_panic_on_zero ... ok
+test seam::tests::seam_traits_drive_the_kernel_math ... ok
+test fixed::tests::div_by_zero_saturates_by_sign ... ok
+test lora::tests::lora_commitment_refuses_non_finite_weights ... ok
+test fixed::tests::mul_saturates_on_extreme_not_sign_flip ... ok
+test aggregate::tests::aggregate_rejects_overflowing_trim ... ok
+test fixed::tests::one_round_trips ... ok
+test aggregate::tests::determinism_and_order_independence ... ok
+test aggregate::tests::fails_closed ... ok
+test settlement::tests::reward_weight_is_fail_closed_like_its_siblings ... ok
+test fixed::tests::from_f32_maps_non_finite_to_zero ... ok
+test settlement::tests::patronage_units_match_onchain_under_non_unit_weights ... ok
+
+test result: ok. 28 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.01s
+
+   Doc-tests citrate_fed_types
+
+running 0 tests
+
+test result: ok. 0 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.00s
+
