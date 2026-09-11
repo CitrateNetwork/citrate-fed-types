@@ -1,4 +1,6 @@
 # citrate-fed-types
+
+*Part of the **[Citrate Network](https://citrate.ai)** — own the means of computation. · [Docs](https://docs.citrate.ai) · [Run a node](https://citrate.ai/download) · [Contribute → free membership](https://github.com/CitrateNetwork/.github/blob/main/CONTRIBUTING.md)*
 > The audited, deterministic Rust boundary crate shared between the Citrate chain and the federated-meta-learning research code — the math both sides must agree on **bit-for-bit**.
 
 ## What it is
