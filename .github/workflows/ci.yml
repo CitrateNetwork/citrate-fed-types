@@ -6,6 +6,7 @@ name: ci
 # becomes the public dependency root. Tune on first green run once billing is back.
 
 on:
+  workflow_dispatch:
   push:
     branches: [main]
   pull_request: {}
