@@ -205,6 +205,23 @@ mod tests {
         );
     }
 
+    /// Negative compute with an in-range quality must also weigh zero: the
+    /// non-negativity guard on `compute_metered` is independent of the quality clamp.
+    #[test]
+    fn reward_weight_floors_negative_compute_with_valid_quality() {
+        for q in [0.25_f32, 0.5, 1.0] {
+            let r = row(-4000.0, q);
+            assert_eq!(
+                r.reward_weight().raw(),
+                0,
+                "negative compute at quality {q} must weigh zero"
+            );
+            assert_eq!(r.patronage_units(BPS_SCALE, BPS_SCALE), 0);
+        }
+        // Positive control: the same quality with positive compute still pays.
+        assert!(row(4000.0, 0.5).reward_weight().raw() > 0);
+    }
+
     /// FT-B-007/FT-B-008: `try_new` refuses an invalid row at construction — the precondition
     /// that a bare `new()` lets slip through to exactly one of four accessors.
     #[test]
